@@ -11,6 +11,7 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.app import App
 from kivy.uix.label import Label
+from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.logger import Logger
 
@@ -209,6 +210,36 @@ class KALiteApp(App):
         self.layout.add_widget(self.server_box)
         return self.layout
 
+    def build_config(self, config):
+        config.setdefaults('connection', {
+            'host': self.server_host,
+            'port': self.server_port
+        })
+
+    def build_settings(self, settings):
+        panel = '''[
+        { "type": "title", "title": "Connection" },
+        { "type": "string", "title": "Host",
+        "desc": "Hostname or IP address to listen for connections",
+        "section": "connection", "key": "host" },
+        { "type": "numeric", "title": "Port",
+        "desc": "Port to listen for connections",
+        "section": "connection", "key": "port" }
+        ]'''
+        settings.add_json_panel('KA Lite', self.config, data=panel)
+
+    def on_config_change(self, config, section, key, value):
+        if config is self.config:
+            if section == 'connection' and self.kalite.server_is_running:
+                # prevent multiple instances of server
+                self.stop_server()
+                text = 'Server is stopped due to connection settings change.'
+                content = Label(text=text, text_size=(480, None))
+                popup = Popup(title='Server is stopped', content=content,
+                              text_size=(480, None),
+                              size_hint=(None, None), size=(500, 200))
+                popup.open()
+
     def on_start(self):
         self.kalite = ServerThread(self)
         self.prepare_server()
@@ -245,6 +276,8 @@ class KALiteApp(App):
         schedule('check_server', 'Checking server status')
 
     def start_server(self):
+        self.server_host = self.config.get('connection', 'host')
+        self.server_port = self.config.get('connection', 'port')
         description = "Run server. To see the KA Lite site, " + (
             "open  http://{}:{} in browser").format(self.server_host,
                                                     self.server_port)
