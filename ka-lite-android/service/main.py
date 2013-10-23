@@ -3,6 +3,7 @@ import os
 import time
 import socket
 import threading
+import struct
 from kivy.logger import Logger
 from kivy.utils import platform
 import kivy
@@ -122,6 +123,9 @@ class KALiteServer(object):
                 sock.close()
         return result
 
+    def get_external_ip_address(self):
+        raise NotImplementedError
+
 
 class AndroidServer(KALiteServer):
 
@@ -159,6 +163,17 @@ class AndroidServer(KALiteServer):
                 "port={}".format(port),
                 'daemonize=False',
                 'threads=3'])
+
+    def get_external_ip_address(self):
+        from jnius import autoclass
+        context = autoclass('org.renpy.android.PythonActivity').mActivity
+        Context = autoclass('android.content.Context')
+        service = context.getSystemService(Context.WIFI_SERVICE)
+        info = service.getConnectionInfo()
+        addr = info.getIpAddress()
+        # IPv4 only
+        addr_tuple = struct.unpack("4B", struct.pack("I", addr))
+        return '.'.join(map(str, addr_tuple))
 
 
 if platform() == 'android':

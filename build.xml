@@ -116,6 +116,7 @@
     <arg line="--dir ../../../ka-lite-android/" />
     <arg line="--install-location preferExternal" />
     <arg line="--permission INTERNET" />
+    <arg line="--permission ACCESS_WIFI_STATE" />
     <arg line="debug" />
     <!-- <arg line="installd" /> -->
   </exec>

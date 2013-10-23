@@ -278,8 +278,16 @@ class KALiteApp(App):
     def start_server(self):
         self.server_host = self.config.get('connection', 'host')
         self.server_port = self.config.get('connection', 'port')
+        host = self.server_host
+        if host == '0.0.0.0':
+            try:
+                host = self.kalite.get_external_ip_address()
+            except Exception as e:
+                msg = "Can't get external IP: {type}{args}".format(
+                    type=type(e), args=e.args)
+                Logger.warning(msg)
         description = "Run server. To see the KA Lite site, " + (
-            "open  http://{}:{} in browser").format(self.server_host,
+            "open  http://{}:{} in browser").format(host,
                                                     self.server_port)
         if not self.kalite.server_is_running:
             self.kalite.schedule('start_server', description)
