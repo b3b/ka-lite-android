@@ -1,16 +1,40 @@
-#:kivy 1.0
-#:import kivy kivy
+#:kivy 1.8.0
+
+<DownloadProgress@BoxLayout>:
+    orientation: 'vertical'
+    status: app.downloads_current_progress[root.download_id] if app.downloads_current_progress else None
+    Label:
+        text: root.progress_string(root.destination, root.status) if root.status else root.destination
+    ProgressBar:
+        value: root.status.progress if root.status else 0
 
 <AppLayout>:
     cols: 1
-    Bubble:
-        arrow_pos: 'bottom_mid'
-        orientation: 'horizontal'
-        BubbleButton:
-            text: 'Start server'
-            on_press: app.start_server()
-        BubbleButton:
-            text: 'Stop server'
-            on_press: app.stop_server()
-    Label:
-        text: 'KA Lite test'
+    ActionBar:
+        ActionView:
+            ActionPrevious:
+                title: 'App test'
+                with_previous: False
+                #on_release: actions.trigger_action()
+            ActionGroup:
+                id: actions
+                text: 'Actions'
+                mode: 'normal'
+                ActionButton:
+                    text: 'Show Exercise'
+                    on_release: app.show_browser()
+                ActionButton:
+                    text: 'Show video'
+                    on_release: app.show_video()
+                ActionButton:
+                    text: 'Delete video'
+                    on_release: app.delete_video()
+    FloatLayout:
+        Scatter:
+            size_hint: None, None
+            size: image.size
+            Image:
+                id: image
+                source: 'content/add_sub.png'
+                size: self.texture_size
+

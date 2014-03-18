@@ -1,198 +1,133 @@
-import sys
 import os
-import time
-from functools import partial, wraps
-from zipfile import ZipFile
-import threading
-import Queue
+from functools import partial
+from collections import namedtuple, defaultdict
 import kivy
-kivy.require('1.0.7')
-from kivy.uix.gridlayout import GridLayout
-from kivy.uix.boxlayout import BoxLayout
+kivy.require('1.8.0')
+from kivy.properties import NumericProperty, StringProperty, ObjectProperty
 from kivy.app import App
-from kivy.uix.label import Label
-from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.logger import Logger
+from kivy.uix.popup import Popup
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
+from android.runnable import run_on_ui_thread
+from android import AndroidService
 
 import logging
 logging.root = Logger
 
-from service.main import Server
+from jnius import autoclass, cast, PythonJavaClass, java_method
+String = autoclass('java.lang.String')
+Uri = autoclass('android.net.Uri')
+Context = autoclass('android.content.Context')
+Intent = autoclass('android.content.Intent')
+Toast = autoclass('android.widget.Toast')
+DialogInterface = autoclass('android.content.DialogInterface')
+AlertDialogBuilder = autoclass('android.app.AlertDialog$Builder')
+DownloadManager = autoclass('android.app.DownloadManager')
+DownloadManagerRequest = autoclass('android.app.DownloadManager$Request')
+DownloadManagerQuery = autoclass('android.app.DownloadManager$Query')
+
+
+def start_activity(intent):
+    activity = autoclass('org.renpy.android.PythonActivity').mActivity
+    activity.startActivity(intent)
+
+
+def make_toast(text, duration=5):
+    activity = autoclass('org.renpy.android.PythonActivity').mActivity
+    toast = Toast.makeText(activity, String(text), duration)
+    toast.show()
+
+
+def get_download_manager():
+    activity = autoclass('org.renpy.android.PythonActivity').mActivity
+    return cast('android.app.DownloadManager',
+                activity.getSystemService(Context.DOWNLOAD_SERVICE))
+
+
+def get_content_uri(name):
+    return Uri.parse(
+        '/'.join(('file:/', os.path.abspath('.'), 'content', name)))
+
 
 class AppLayout(GridLayout):
     pass
 
 
-class ServerThread(threading.Thread, Server):
+class DownloadProgress(BoxLayout):
+    download_id = NumericProperty()
+    destination = StringProperty('')
+    status = ObjectProperty()
 
-    def __init__(self, app):
-        super(ServerThread, self).__init__()
+    def __init__(self, download_id, destination):
+        super(DownloadProgress, self).__init__()
+        self.download_id = download_id
+        self.destination = destination
 
-        class AppCaller(object):
-            '''Execute App method in the main thread'''
-
-            def __getattribute__(self, method_name):
-                value = getattr(app, method_name)
-                method = callable(value) and value
-                if method:
-                    def clock(*args, **kwargs):
-                        Clock.schedule_once(partial(method, *args, **kwargs),
-                                            0)
-                    return clock
-                return value
-
-        self.app = AppCaller()
-        self._stop_thread = threading.Event()
-        self.activities = Queue.Queue()
-
-        self.tmp_dir = kivy.kivy_home_dir
-        self.pid_file = os.path.join(self.tmp_dir, 'wsgiserver.pid')
-
-        try:
-            import __main__
-            self.project_dir = os.path.dirname(
-                os.path.abspath(__main__.__file__))
-        except:
-            self.project_dir = os.path.abspath(os.path.curdir)
-
-    def run(self):
-        '''Execute queue while not stopped'''
-
-        while not self._stop_thread.isSet():
-            try:
-                activity_name, description, args = self.activities.get(True,
-                                                                       4)
-            except Queue.Empty:
-                pass
-            else:
-                activity = getattr(self, activity_name)
-                if description:
-                    self.app.report_activity('start', description)
-                try:
-                    result = activity(*args)
-                except:
-                    self.app.report_activity('result', 'fail')
-                    with self.activities.mutex:
-                        self.activities.queue.clear()
-                    raise
-                if description:
-                    if result is None:
-                        result = 'OK'
-                    self.app.report_activity('result', result)
-
-    def schedule(self, activity, description=None, *args):
-        self.activities.put((activity, description, args))
-
-    def extract_kalite(self):
-        '''KA Lite code is in the ZIP archive on the first run, extract it'''
-
-        os.chdir(self.project_dir)
-        if os.path.exists('ka-lite.zip'):
-            with ZipFile('ka-lite.zip', mode="r") as z:
-                z.extractall('ka-lite')
-            os.remove('ka-lite.zip')
-        if not os.path.exists('ka-lite'):
-            return 'fail'
-
-    def python_version(self):
-        import sys
-        return sys.version.split()[0]
-
-    def import_django(self):
-        import django
-        return django.get_version()
-
-    def setup_environment(self):
-        pj = os.path.join
-        run_from_egg = sys.path[0].endswith('.zip')
-        sys.path.insert(1 if run_from_egg else 0,
-                        pj(self.project_dir, 'ka-lite/kalite'))
-        sys.path.insert(1 if run_from_egg else 0,
-                        pj(self.project_dir, 'ka-lite'))
-        sys.path.insert(1, pj(self.project_dir, 'ka-lite/python-packages'))
-        os.chdir(pj(self.project_dir, 'ka-lite', 'kalite'))
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'settings')
-        self.settings = __import__('settings')
-        self.execute_manager = __import__(
-            'django.core.management',
-            fromlist=('execute_manager',)).execute_manager
-
-    def syncdb(self):
-        self.execute_manager(self.settings, ['manage.py', 'syncdb',
-                                         '--noinput'])
-        self.execute_manager(self.settings, ['manage.py', 'migrate',
-                                         '--merge'])
-
-    def generate_keys(self):
-        from config.models import Settings
-        if Settings.get('private_key'):
-            return 'key exists'
-        self.execute_manager(self.settings, ['manage.py', 'generatekeys'])
-
-    def create_superuser(self):
-        from django.contrib.auth.models import User
-        if User.objects.filter(is_superuser=True).exists():
-            return 'user exists'
-
-        username = 'yoda'
-        email = 'yoda@example.com'
-        password = 'yoda'
-
-        self.execute_manager(self.settings, [
-                'manage.py', 'createsuperuser',
-                '--noinput',
-                '--user', username,
-                '--email', email])
-        user = User.objects.get(username__exact=username)
-        user.set_password(password)
-        user.save()
-        return 'user "{0}" with password "{1}"'.format(username,
-                                                       password)
-
-    def check_server(self):
-        return 'server is running' if self.server_is_running else (
-            'server is stopped')
-
-    def start_server(self):
-        if super(ServerThread, self).start_server() == 'fail':
-            return 'fail'
-
-        result = 'fail'
-        for i in range(5):
-            if self.server_is_running:
-                result = 'OK'
-                break
-            else:
-                time.sleep(2)
-        if result == 'fail':
-            self.stop_server()
-        return result
-
-    def stop_server(self):
-        super(ServerThread, self).stop_server()
-        result = 'fail'
-        for i in range(5):
-            if not self.server_is_running:
-                result = 'OK'
-                break
-            else:
-                time.sleep(2)
-        return result
-
-    def stop_thread(self):
-        self._stop_thread.set()
+    def progress_string(self, destination, status):
+        status_string = status.status or ''
+        return "{status} download of {name}: {downloaded} of {total} ({progress}%)".format(
+            status=status_string.capitalize(), name=destination,
+            downloaded=status.downloaded, total=status.total,
+            progress=status.progress)
 
 
-def clock_callback(f):
-    '''Decorator for Clock callbacks'''
+class OnClickListener(PythonJavaClass):
 
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        # Time diff is passed as an argument, call without it
-        return f(*args[:-1], **kwargs)
+    __javainterfaces__ = ['android/content/DialogInterface$OnClickListener']
 
-    return wrapper
+    def __init__(self, callback, *args, **kwargs):
+        super(OnClickListener, self).__init__(*args, **kwargs)
+        self.callback = callback
+
+    @java_method('(Landroid/content/DialogInterface;I)V')
+    def onClick(self, dialog, which):
+        self.callback(confirmed=(which == DialogInterface.BUTTON_POSITIVE))
+
+
+ProgressStatus = namedtuple('ProgressStatus',
+                            'downloaded total progress status')
+
+
+def get_downloads_progress(*download_ids):
+    manager = get_download_manager()
+    query = DownloadManagerQuery()
+    query.setFilterById(*download_ids)
+    cursor = manager.query(query)
+
+    def column_index(name):
+        return cursor.getColumnIndex(getattr(DownloadManager, name))
+
+    column_names = ('COLUMN_ID', 'COLUMN_BYTES_DOWNLOADED_SO_FAR',
+                    'COLUMN_TOTAL_SIZE_BYTES', 'COLUMN_STATUS')
+    ID, DOWNLOADED, TOTAL, STATUS = map(column_index, column_names)
+
+    def status_string(status_id):
+        statuses = {DownloadManager.STATUS_FAILED: 'failed',
+                    DownloadManager.STATUS_PAUSED: 'paused',
+                    DownloadManager.STATUS_PENDING: 'pending',
+                    DownloadManager.STATUS_RUNNING: 'running',
+                    DownloadManager.STATUS_SUCCESSFUL: 'successful'}
+        return statuses.get(status_id, None)
+
+    while True:
+        progress = defaultdict(lambda: ProgressStatus(0, 0, 0, None))
+        data_available = cursor.moveToFirst()
+        while data_available:
+            downloaded = cursor.getInt(DOWNLOADED)
+            total = cursor.getInt(TOTAL)
+            if total < 0:
+                downloaded = total = 0
+            progress[cursor.getInt(ID)] = ProgressStatus(
+                downloaded,
+                total,
+                (downloaded * 100) / (total or 1),
+                status_string(cursor.getInt(STATUS)))
+            data_available = cursor.moveToNext()
+        cursor.close()
+        yield progress
+        cursor = manager.query(query)
 
 
 class KALiteApp(App):
@@ -200,113 +135,122 @@ class KALiteApp(App):
     server_host = '0.0.0.0'
     # choose a non-default port,
     # to avoid messing with other KA Lite installations
-    server_port = '8024'
+    server_port = '8032'
+
+    urls = {
+        'add_sub.mp4': 'http://s3.amazonaws.com/KA-youtube-converted/AuX7nPBqDts.mp4/AuX7nPBqDts.mp4',
+        'add_sub.png': 'http://s3.amazonaws.com/KA-youtube-converted/AuX7nPBqDts.mp4/AuX7nPBqDts.png',
+        'add_sub.srt': 'http://video.google.com/timedtext?lang=en&format=srt&v=AuX7nPBqDts'
+        }
+
+    downloads_current_progress = ObjectProperty()
+
+    @property
+    def video_is_available(self):
+        return os.path.exists('content/completed')
 
     def build(self):
         self.layout = AppLayout()
-        self.server_box = BoxLayout(orientation='horizontal')
-        self.messages = BoxLayout(orientation='vertical')
-        self.layout.add_widget(self.messages)
-        self.layout.add_widget(self.server_box)
         return self.layout
 
-    def build_config(self, config):
-        config.setdefaults('connection', {
-            'host': self.server_host,
-            'port': self.server_port
-        })
-
-    def build_settings(self, settings):
-        panel = '''[
-        { "type": "title", "title": "Connection" },
-        { "type": "string", "title": "Host",
-        "desc": "Hostname or IP address to listen for connections",
-        "section": "connection", "key": "host" },
-        { "type": "numeric", "title": "Port",
-        "desc": "Port to listen for connections",
-        "section": "connection", "key": "port" }
-        ]'''
-        settings.add_json_panel('KA Lite', self.config, data=panel)
-
-    def on_config_change(self, config, section, key, value):
-        if config is self.config:
-            if section == 'connection' and self.kalite.server_is_running:
-                # prevent multiple instances of server
-                self.stop_server()
-                text = 'Server is stopped due to connection settings change.'
-                content = Label(text=text, text_size=(480, None))
-                popup = Popup(title='Server is stopped', content=content,
-                              text_size=(480, None),
-                              size_hint=(None, None), size=(500, 200))
-                popup.open()
-
     def on_start(self):
-        self.kalite = ServerThread(self)
-        self.prepare_server()
-        self.kalite.start()
+        pass
 
     def on_pause(self):
         return True
 
     def on_stop(self):
-        if self.kalite.is_alive():
-            self.kalite.schedule('stop_thread')
-            self.kalite.join()
+        pass
 
-    @clock_callback
-    def report_activity(self, activity, message):
-        assert activity in ('start', 'result')
-        if activity == 'start':
-            self.activity_label = Label(text="{0} ... ".format(message))
-            self.messages.add_widget(self.activity_label)
-        elif hasattr(self, 'activity_label'):
-            self.activity_label.text = self.activity_label.text + message
-
-    def prepare_server(self):
-        '''Schedule preparation steps to be executed in the server thread'''
-
-        schedule = self.kalite.schedule
-        schedule('extract_kalite', 'Extracting ka-lite archive')
-        schedule('setup_environment', 'Setting up environment')
-        schedule('python_version', 'Checking Python version')
-        schedule('import_django', 'Trying to import Django')
-        schedule('syncdb', 'Preparing database')
-        schedule('generate_keys', 'Generating keys')
-        schedule('create_superuser', 'Creating admin user')
-        schedule('check_server', 'Checking server status')
-
-    def start_server(self):
-        self.server_host = self.config.get('connection', 'host')
-        self.server_port = self.config.get('connection', 'port')
-        host = self.server_host
-        if host == '0.0.0.0':
-            try:
-                host = self.kalite.get_external_ip_address()
-            except Exception as e:
-                msg = "Can't get external IP: {type}{args}".format(
-                    type=type(e), args=e.args)
-                Logger.warning(msg)
-        description = "Run server. To see the KA Lite site, " + (
-            "open  http://{}:{} in browser").format(host,
-                                                    self.server_port)
-        if not self.kalite.server_is_running:
-            self.kalite.schedule('start_server', description)
-
-    def stop_server(self):
-        if self.kalite.server_is_running:
-            self.kalite.schedule('stop_server', 'Stop server')
-
-    @clock_callback
-    def start_service_part(self):
-        from android import AndroidService
+    @run_on_ui_thread
+    def show_browser(self):
         self.service = AndroidService('KA Lite', 'server is running')
-        # start executing service/main.py as a service
-        self.service.start(':'.join((self.server_host, self.server_port)))
+        self.service.start(self.server_port)
 
-    @clock_callback
-    def stop_service_part(self):
-        from android import AndroidService
-        AndroidService().stop()
+        url = "http://127.0.0.1:{port}/exercises/addition_1.html".format(
+            port=self.server_port)
+        intent = Intent()
+        intent.setAction(Intent.ACTION_VIEW)
+        intent.setData(Uri.parse(url))
+        start_activity(intent)
+
+    @run_on_ui_thread
+    def show_video(self):
+        if not self.video_is_available:
+            return self.ask_download_video()
+        intent = Intent()
+        intent.setAction(Intent.ACTION_VIEW)
+        intent.setDataAndType(get_content_uri('add_sub.mp4'), 'video/*')
+        #intent.setType('video/*')
+        start_activity(intent)
+
+    @run_on_ui_thread
+    def delete_video(self):
+        files = os.listdir('content')
+        if files:
+            [os.remove(os.path.join('content', f)) for f in files]
+            make_toast("Video deleted successfully")
+            self.video_icon_path = ''
+        else:
+            make_toast("Video is not exists")
+
+    def ask_download_video(self):
+        activity = autoclass('org.renpy.android.PythonActivity').mActivity
+        builder = AlertDialogBuilder(activity)
+        builder.setTitle(String('Video is not available'))
+        builder.setMessage(String('Download exersice video an subtitles?'))
+        listener = OnClickListener(self.download_video)
+        builder.setPositiveButton(String('Yes'), listener)
+        builder.setNegativeButton(String('No'), listener)
+        builder.show()
+
+    @run_on_ui_thread
+    def download_video(self, confirmed=True):
+        if not confirmed:
+            return
+        downloads = [(self.start_download(url, name), name) for name, url in
+                     self.urls.iteritems()]
+        self.watch_downloads(downloads, on_completed=self.show_video)
+
+    def start_download(self, url, destination_name):
+        manager = get_download_manager()
+        request = DownloadManagerRequest(Uri.parse(url))
+
+        if not os.path.exists('content'):
+            os.makedirs('content')
+
+        request.setDestinationUri(get_content_uri(destination_name))
+        return manager.enqueue(request)
+
+    def watch_downloads(self, downloads, on_completed=None):
+
+        def add_progress(task):
+            download_id, destination = task
+            content.add_widget(DownloadProgress(download_id, destination))
+            return download_id
+
+        content = BoxLayout(orientation='vertical')
+        download_ids = map(add_progress, downloads)
+        popup = Popup(title='Downloading', content=content)
+        popup.open()
+        self.update_progress(popup, get_downloads_progress(*download_ids),
+                             on_completed)
+
+    def update_progress(self, popup, get_progress, on_completed, *args):
+        progress = get_progress.next()
+        self.downloads_current_progress = progress
+        if all([status.status == 'successful' for status in progress.values()]):
+            popup.dismiss()
+            self.layout.do_layout()
+            open('content/completed', 'a').close()
+            self.video_icon_path = 'content/add_sub.png'
+            if on_completed:
+                on_completed()
+        else:
+            interval = 2
+            Clock.schedule_once(partial(self.update_progress, popup,
+                                        get_progress, on_completed),
+                                interval)
 
 
 if __name__ == '__main__':
@@ -314,6 +258,6 @@ if __name__ == '__main__':
         KALiteApp().run()
     except Exception as e:
         msg = "Error: {type}{args}".format(type=type(e),
-                                            args=e.args)
+                                           args=e.args)
         Logger.exception(msg)
         raise

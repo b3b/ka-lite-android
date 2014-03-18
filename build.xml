@@ -2,7 +2,7 @@
 <project name="KA Lite Android builder" default="main" basedir=".">
 
 <target name="main" depends="android-vars, python-for-android, distribute,
-                             ka-lite, build">
+                             khan-exercises, build">
 
 </target>
 
@@ -60,59 +60,34 @@
     <env key="ANDROIDSDK" value="${android-sdk}" />
     <env key="ANDROIDNDK" value="${android-ndk}" />
     <arg value="-m" />
-    <arg value="sqlite3 openssl kivy" />
+    <arg value="kivy" />
   </exec>
-  <!-- include sqlite3, wsgiref, csv, unittest modules -->
-  <replaceregexp file="python-for-android/dist/default/blacklist.txt"
-                 match="(^.*wsgiref.*$)|(^.*(sqlite3).*$)|(^.*(_csv).*$)|(^.*(unittest).*$)"
-                 replace="#"
-                 byline="true" />
 </target>
 
-<target name="check-ka-lite">
-  <condition property="ka-lite-exists">
-      <available file="ka-lite-android/ka-lite.zip" type="file" />
+<target name="check-khan-exercises">
+  <condition property="khan-exercises-exists">
+      <available file="ka-lite-android/khan-exercises" type="dir" />
   </condition>
 </target>
 
-<target name="ka-lite"
-        description="clone the KA Lite repo, zip it"
-        depends="check-ka-lite"
-        unless="ka-lite-exists">
-  <!-- When building the apk, Python for Android will try to compile
-       all the .py files (including Django and other KA Lite python-packages/),
-       that may lead to strange errors when running this code on Android.
-       Zipping serves as a protection for .py files. -->
+<target name="khan-exercises"
+        description="clone the Khan Academy Exercises repo"
+        depends="check-khan-exercises"
+        unless="khan-exercises-exists">
   <exec executable="git" failonerror="true">
-    <arg line="clone --recursive https://github.com/learningequality/ka-lite.git" />
+    <arg line="clone git@github.com:khan/khan-exercises ka-lite-android/khan-exercises" />
   </exec>
-  <!-- remove self-referencing symbolic link, that could break things -->
-  <delete file="ka-lite/kalite/faq/faq" />
-  <!-- copy in our local_settings.py file that disables caching, reduces the number of threads, etc -->
-  <copy file="local_settings.py" todir="ka-lite/kalite" />
-  <!-- shorten long .py filenames now to avoid bad truncation during later build process -->
-  <exec executable="python" failonerror="true">
-     <arg line="shorten_filenames.py" />
-  </exec>
-  <!-- build the zip file of the ka-lite codebase -->
-  <zip destfile="ka-lite-android/ka-lite.zip"
-       basedir="ka-lite" />
 </target>
 
 <target name="build" description="build KA Lite application">
-  <property name="app-name" value="KA Lite test" />
-
-  <!-- apk version = KA Lite version number -->
-  <exec dir="ka-lite/kalite" executable="python" outputproperty="app-version">
-    <arg line="-c 'import version; print version.VERSION'" />
-  </exec>
+  <property name="app-name" value="KA Lite lite test" />
 
   <exec dir="python-for-android/dist/default" executable="./build.py" failonerror="true">
     <env key="ANDROIDAPI" value="${android-api}" />
     <env key="ANDROIDNDKVER" value="${android-ndkver}" />
     <env key="ANDROIDSDK" value="${android-sdk}" />
     <env key="ANDROIDNDK" value="${android-ndk}" />
-    <arg line="--package org.kalite.test --name '${app-name}' --version ${app-version}" />
+    <arg line="--package org.kalitelite.test --name '${app-name}' --version 0.01" />
     <arg line="--dir ../../../ka-lite-android/" />
     <arg line="--install-location preferExternal" />
     <arg line="--permission INTERNET" />
